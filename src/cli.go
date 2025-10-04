@@ -22,11 +22,6 @@ func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
 		return fmt.Errorf("yt-dlp is not installed")
 	}
 
-	// Reject playlist URLs
-	if IsPlaylistURL(url) {
-		return fmt.Errorf("playlist URL detected. Use -playlist flag instead:\n  %s -playlist %s", os.Args[0], url)
-	}
-
 	downloadsDir, err := ensureDownloadsFolder()
 	if err != nil {
 		return fmt.Errorf("failed to create downloads folder: %w", err)
@@ -35,9 +30,24 @@ func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
 	fmt.Printf("Downloading: %s\n", url)
 	fmt.Printf("Destination: %s\n\n", downloadsDir)
 
-	downloadID, err := db.InsertDownload(url, "")
+	// Extract video metadata first
+	videoInfo, err := ExtractVideoMetadata(url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to extract metadata: %v\n", err)
+		videoInfo = &VideoInfo{URL: url} // Continue with minimal info
+	}
+
+	downloadID, err := db.InsertDownload(url, videoInfo.Title)
 	if err != nil {
 		return fmt.Errorf("failed to insert download record: %w", err)
+	}
+
+	// Update channel info if available
+	if videoInfo.Channel != "" {
+		db.UpdateDownloadChannel(downloadID, videoInfo.Channel)
+	}
+	if videoInfo.ChannelURL != "" {
+		db.UpdateDownloadChannelURL(downloadID, videoInfo.ChannelURL)
 	}
 
 	// Setup signal handling for Ctrl+C
@@ -219,6 +229,15 @@ func ListDownloads(db *DB) error {
 		if d.Channel != "" {
 			fmt.Printf("   Channel: %s\n", d.Channel)
 		}
+		if d.PlaylistID != "" {
+			// Get playlist info to show which playlist this came from
+			playlist, err := db.GetPlaylist(d.PlaylistID)
+			if err == nil && playlist != nil {
+				fmt.Printf("   Playlist: %s\n", playlist.Title)
+			}
+		} else {
+			fmt.Printf("   Source: Direct download (orphan)\n")
+		}
 		if d.FilePath != "" {
 			fmt.Printf("   Path: %s\n", d.FilePath)
 		}
@@ -232,18 +251,18 @@ func ListDownloads(db *DB) error {
 	return nil
 }
 
-func ExtractPlaylistToDB(playlistURL string, db *DB) error {
+func ExtractPlaylistToDB(urlStr string, db *DB) error {
 	if !IsInstalled() {
 		return fmt.Errorf("yt-dlp is not installed")
 	}
 
-	info, err := ExtractPlaylist(playlistURL)
+	info, err := ExtractPlaylist(urlStr)
 	if err != nil {
-		return fmt.Errorf("failed to extract playlist: %w", err)
+		return fmt.Errorf("failed to extract videos: %w", err)
 	}
 
 	if len(info.Videos) == 0 {
-		return fmt.Errorf("no videos found in playlist")
+		return fmt.Errorf("no videos found")
 	}
 
 	title := info.Title
@@ -256,7 +275,7 @@ func ExtractPlaylistToDB(playlistURL string, db *DB) error {
 	channelURL := info.ChannelURL
 
 	// Check if playlist already exists
-	existingPlaylist, err := db.GetPlaylistByURL(playlistURL)
+	existingPlaylist, err := db.GetPlaylistByURL(urlStr)
 	var playlistID string
 	var newVideosAdded int
 
@@ -295,7 +314,7 @@ func ExtractPlaylistToDB(playlistURL string, db *DB) error {
 			}
 		}
 
-		playlistID, err = db.InsertPlaylist(playlistURL, title, channel, channelURL, totalVideos, savedCount)
+		playlistID, err = db.InsertPlaylist(urlStr, title, channel, channelURL, totalVideos, savedCount)
 		if err != nil {
 			return fmt.Errorf("failed to insert playlist: %w", err)
 		}
@@ -338,7 +357,7 @@ func ListPlaylists(db *DB) error {
 		}
 		fmt.Printf("   URL: %s\n", p.URL)
 		fmt.Printf("   Total videos: %d | Saved: %d | Downloaded: %d\n", p.TotalVideos, p.VideosSaved, p.VideosDownloaded)
-		fmt.Printf("   Extracted: %s | Last updated: %s\n", p.ExtractedAt.Format("2006-01-02 15:04:05"), p.LastUpdated.Format("2006-01-02 15:04:05"))
+		fmt.Printf("   Created: %s | Updated: %s\n", p.CreatedAt.Format("2006-01-02 15:04:05"), p.UpdatedAt.Format("2006-01-02 15:04:05"))
 		fmt.Println()
 	}
 

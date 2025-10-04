@@ -3,6 +3,7 @@ package src
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -15,12 +16,6 @@ func IsInstalled() bool {
 	return err == nil
 }
 
-func IsPlaylistURL(urlStr string) bool {
-	// Check for common playlist indicators
-	return strings.Contains(urlStr, "/playlist") ||
-		strings.Contains(urlStr, "list=") ||
-		strings.Contains(urlStr, "/playlists/")
-}
 
 func NormalizeFilename(filename string) string {
 	// Replace spaces with underscores
@@ -138,6 +133,12 @@ type VideoInfo struct {
 }
 
 func ExtractPlaylist(playlistURL string) (*PlaylistInfo, error) {
+	// If it's a channel URL, try to get the canonical channel ID/URL first
+	var canonicalChannelURL string
+	if IsChannelURL(playlistURL) {
+		canonicalChannelURL = extractChannelURL(playlistURL)
+	}
+
 	args := []string{
 		"--flat-playlist",
 		"--get-url",
@@ -170,14 +171,49 @@ func ExtractPlaylist(playlistURL string) (*PlaylistInfo, error) {
 			if info.Title == "" {
 				info.Title = parts[0]
 				info.Channel = parts[1]
-				info.ChannelURL = parts[2]
+				// Clean the playlist channel URL immediately
+				info.ChannelURL = CleanChannelURL(parts[2])
+			}
+
+			videoChannel := parts[6]
+			videoChannelURL := parts[7]
+
+			// Fallback: Use playlist channel info if video channel is missing or NA
+			if videoChannel == "" || videoChannel == "NA" {
+				videoChannel = parts[1] // Use playlist_channel
+			}
+			if videoChannelURL == "" || videoChannelURL == "NA" {
+				// If we have a canonical channel URL, use it; otherwise use playlist_channel_url
+				if canonicalChannelURL != "" {
+					videoChannelURL = canonicalChannelURL
+				} else {
+					videoChannelURL = parts[2] // Use playlist_channel_url
+				}
+			}
+
+			// Clean the video channel URL
+			videoChannelURL = CleanChannelURL(videoChannelURL)
+
+			// Ensure video channel name is never empty
+			if videoChannel == "" || videoChannel == "NA" {
+				if videoChannelURL != "" && videoChannelURL != "NA" {
+					videoChannel = extractChannelNameFromURL(videoChannelURL)
+				} else {
+					videoChannel = "Unknown Channel"
+				}
+			}
+
+			// Ensure video channel URL is never empty
+			if videoChannelURL == "" || videoChannelURL == "NA" {
+				// This shouldn't happen after fallbacks, but just in case
+				videoChannelURL = ""
 			}
 
 			video := VideoInfo{
 				ID:         parts[4],
 				Title:      parts[5],
-				Channel:    parts[6],
-				ChannelURL: parts[7],
+				Channel:    videoChannel,
+				ChannelURL: videoChannelURL,
 				URL:        parts[8],
 			}
 			info.Videos = append(info.Videos, video)
@@ -189,5 +225,125 @@ func ExtractPlaylist(playlistURL string) (*PlaylistInfo, error) {
 		info.Title = extractTitleFromURL(playlistURL)
 	}
 
+	// Use canonical channel URL if we extracted it
+	if canonicalChannelURL != "" {
+		info.ChannelURL = canonicalChannelURL
+	} else if (info.ChannelURL == "" || info.ChannelURL == "NA") && IsChannelURL(playlistURL) {
+		// Fallback: use the original URL if it's a channel URL
+		info.ChannelURL = CleanChannelURL(playlistURL)
+	}
+
+	// Ensure channel name is never empty
+	if info.Channel == "" || info.Channel == "NA" {
+		// Extract from channel URL if available
+		if info.ChannelURL != "" {
+			info.Channel = extractChannelNameFromURL(info.ChannelURL)
+		}
+	}
+
+	// Ensure channel URL is never empty if we have videos
+	if (info.ChannelURL == "" || info.ChannelURL == "NA") && len(info.Videos) > 0 {
+		// Use the first video's channel URL
+		for _, video := range info.Videos {
+			if video.ChannelURL != "" && video.ChannelURL != "NA" {
+				info.ChannelURL = video.ChannelURL
+				if info.Channel == "" || info.Channel == "NA" {
+					info.Channel = video.Channel
+				}
+				break
+			}
+		}
+	}
+
 	return info, nil
+}
+
+// extractChannelNameFromURL extracts a readable channel name from a URL
+func extractChannelNameFromURL(urlStr string) string {
+	// For @handle format
+	if strings.Contains(urlStr, "/@") {
+		parts := strings.Split(urlStr, "/@")
+		if len(parts) > 1 {
+			return "@" + strings.Split(parts[1], "/")[0]
+		}
+	}
+	// For /channel/ID format
+	if strings.Contains(urlStr, "/channel/") {
+		parts := strings.Split(urlStr, "/channel/")
+		if len(parts) > 1 {
+			return strings.Split(parts[1], "/")[0]
+		}
+	}
+	// For /c/ or /user/ format
+	if strings.Contains(urlStr, "/c/") {
+		parts := strings.Split(urlStr, "/c/")
+		if len(parts) > 1 {
+			return strings.Split(parts[1], "/")[0]
+		}
+	}
+	if strings.Contains(urlStr, "/user/") {
+		parts := strings.Split(urlStr, "/user/")
+		if len(parts) > 1 {
+			return strings.Split(parts[1], "/")[0]
+		}
+	}
+	return "Unknown Channel"
+}
+
+
+// extractChannelURL gets the canonical channel URL (with ID) from any channel URL format
+func extractChannelURL(channelURL string) string {
+	args := []string{
+		"--print", "%(channel_id)s",
+		"--playlist-items", "1",
+		channelURL,
+	}
+
+	cmd := exec.Command("yt-dlp", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	channelID := strings.TrimSpace(string(output))
+	if channelID == "" || channelID == "NA" {
+		return ""
+	}
+
+	// Return the canonical channel URL format
+	return "https://www.youtube.com/channel/" + channelID
+}
+
+func ExtractVideoMetadata(videoURL string) (*VideoInfo, error) {
+	args := []string{
+		"--print", "%(id)s|%(title)s|%(channel)s|%(channel_url)s",
+		videoURL,
+	}
+
+	cmd := exec.Command("yt-dlp", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	line := strings.TrimSpace(string(output))
+	parts := strings.SplitN(line, "|", 4)
+	if len(parts) != 4 {
+		return nil, fmt.Errorf("invalid metadata format")
+	}
+
+	channelURL := parts[3]
+	if channelURL == "NA" || channelURL == "" {
+		channelURL = ""
+	} else {
+		channelURL = CleanChannelURL(channelURL)
+	}
+
+	return &VideoInfo{
+		ID:         parts[0],
+		Title:      parts[1],
+		Channel:    parts[2],
+		ChannelURL: channelURL,
+		URL:        videoURL,
+	}, nil
 }

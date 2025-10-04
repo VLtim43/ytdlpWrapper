@@ -13,7 +13,6 @@ import (
 func main() {
 	// Parse command line arguments manually to allow all ytdlp flags to pass through
 	var url string
-	var playlistURL string
 	var listMode bool
 	var listPlaylists bool
 	var ytdlpArgs []string
@@ -25,22 +24,12 @@ func main() {
 				url = args[i+1]
 				i++
 			}
-		} else if args[i] == "-playlist" || args[i] == "--playlist" {
-			if i+1 < len(args) {
-				playlistURL = args[i+1]
-				i++
-			}
 		} else if args[i] == "-list" || args[i] == "--list" {
 			listMode = true
 		} else if args[i] == "-list-playlists" || args[i] == "--list-playlists" {
 			listPlaylists = true
-		} else if !strings.HasPrefix(args[i], "-") && url == "" && playlistURL == "" {
-			// Auto-detect playlist URLs
-			if src.IsPlaylistURL(args[i]) {
-				playlistURL = args[i]
-			} else {
-				url = args[i]
-			}
+		} else if !strings.HasPrefix(args[i], "-") && url == "" {
+			url = args[i]
 		} else {
 			ytdlpArgs = append(ytdlpArgs, args[i])
 		}
@@ -82,18 +71,20 @@ func main() {
 		return
 	}
 
-	if playlistURL != "" {
-		if err := src.ExtractPlaylistToDB(playlistURL, db); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	if url != "" {
-		if err := src.RunHeadless(url, ytdlpArgs, db); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+		// Check if it's a playlist/channel URL or a single video
+		if src.IsPlaylistURL(url) {
+			// Store playlist/channel videos in DB without downloading
+			if err := src.ExtractPlaylistToDB(url, db); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			// Single video - download immediately
+			if err := src.RunHeadless(url, ytdlpArgs, db); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		return
 	}
