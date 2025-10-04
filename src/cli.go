@@ -15,7 +15,6 @@ var (
 	progressRegex    = regexp.MustCompile(`(\d+\.?\d*)%`)
 	etaRegex         = regexp.MustCompile(`ETA\s+(\d{2}:\d{2}(?::\d{2})?)`)
 	destinationRegex = regexp.MustCompile(`\[download\] Destination: (.+)`)
-	titleRegex       = regexp.MustCompile(`\[download\] (.+?) has already been downloaded`)
 )
 
 func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
@@ -118,7 +117,7 @@ func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
 	if err != nil {
 		if cancelled {
 			// Clean up .part files
-			cleanupPartFiles(downloadsDir, downloadID)
+			cleanupPartFiles(downloadsDir)
 			if dbErr := db.UpdateDownloadStatus(downloadID, StatusCancelled, "", "Download cancelled by user"); dbErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to update download status: %v\n", dbErr)
 			}
@@ -126,7 +125,7 @@ func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
 		}
 
 		// Clean up .part files on failure too
-		cleanupPartFiles(downloadsDir, downloadID)
+		cleanupPartFiles(downloadsDir)
 		if dbErr := db.UpdateDownloadStatus(downloadID, StatusFailed, "", err.Error()); dbErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to update download status: %v\n", dbErr)
 		}
@@ -155,7 +154,7 @@ func ensureDownloadsFolder() (string, error) {
 	return downloadsDir, nil
 }
 
-func cleanupPartFiles(downloadsDir, downloadID string) {
+func cleanupPartFiles(downloadsDir string) {
 	entries, err := os.ReadDir(downloadsDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to read downloads directory: %v\n", err)
@@ -256,24 +255,63 @@ func ExtractPlaylistToDB(playlistURL string, db *DB) error {
 	channel := info.Channel
 	channelURL := info.ChannelURL
 
-	playlistID, err := db.InsertPlaylist(playlistURL, title, channel, channelURL, totalVideos)
-	if err != nil {
-		return fmt.Errorf("failed to insert playlist: %w", err)
-	}
+	// Check if playlist already exists
+	existingPlaylist, err := db.GetPlaylistByURL(playlistURL)
+	var playlistID string
+	var newVideosAdded int
 
-	savedCount := 0
-	for i, video := range info.Videos {
-		if err := db.InsertPlaylistVideo(playlistID, title, video.URL, video.Title, video.ID, video.Channel, video.ChannelURL, i+1); err == nil {
-			savedCount++
+	if err == nil && existingPlaylist != nil {
+		// Playlist exists - update it
+		playlistID = existingPlaylist.ID
+		fmt.Printf("Updating existing playlist: %s\n", title)
+
+		// Add only new videos
+		for i, video := range info.Videos {
+			exists, err := db.VideoExistsInPlaylist(playlistID, video.ID)
+			if err != nil {
+				continue
+			}
+			if !exists {
+				if err := db.InsertPlaylistVideo(playlistID, title, video.URL, video.Title, video.ID, video.Channel, video.ChannelURL, i+1); err == nil {
+					newVideosAdded++
+				}
+			}
 		}
-	}
 
-	fmt.Printf("Playlist: %s\n", title)
-	fmt.Printf("Videos in playlist: %d\n", totalVideos)
-	fmt.Printf("Videos saved to database: %d\n", savedCount)
+		// Update counts
+		currentSaved := existingPlaylist.VideosSaved + newVideosAdded
+		db.UpdatePlaylistCounts(playlistID, totalVideos, currentSaved, existingPlaylist.VideosDownloaded)
 
-	if savedCount < totalVideos {
-		fmt.Fprintf(os.Stderr, "Warning: Only %d/%d videos were saved\n", savedCount, totalVideos)
+		fmt.Printf("Playlist: %s\n", title)
+		fmt.Printf("Total videos in playlist: %d\n", totalVideos)
+		fmt.Printf("New videos added: %d\n", newVideosAdded)
+		fmt.Printf("Total saved: %d\n", currentSaved)
+	} else {
+		// New playlist
+		savedCount := 0
+		for i, video := range info.Videos {
+			if err := db.InsertPlaylistVideo("", title, video.URL, video.Title, video.ID, video.Channel, video.ChannelURL, i+1); err == nil {
+				savedCount++
+			}
+		}
+
+		playlistID, err = db.InsertPlaylist(playlistURL, title, channel, channelURL, totalVideos, savedCount)
+		if err != nil {
+			return fmt.Errorf("failed to insert playlist: %w", err)
+		}
+
+		// Update playlist_id for the videos
+		for _, video := range info.Videos {
+			db.conn.Exec(`UPDATE playlist_videos SET playlist_id = ? WHERE video_id = ? AND playlist_id = ''`, playlistID, video.ID)
+		}
+
+		fmt.Printf("Playlist: %s\n", title)
+		fmt.Printf("Videos in playlist: %d\n", totalVideos)
+		fmt.Printf("Videos saved to database: %d\n", savedCount)
+
+		if savedCount < totalVideos {
+			fmt.Fprintf(os.Stderr, "Warning: Only %d/%d videos were saved\n", savedCount, totalVideos)
+		}
 	}
 
 	return nil
@@ -299,8 +337,8 @@ func ListPlaylists(db *DB) error {
 			fmt.Printf("   Channel: %s\n", p.Channel)
 		}
 		fmt.Printf("   URL: %s\n", p.URL)
-		fmt.Printf("   Videos: %d\n", p.VideoCount)
-		fmt.Printf("   Extracted: %s\n", p.ExtractedAt.Format("2006-01-02 15:04:05"))
+		fmt.Printf("   Total videos: %d | Saved: %d | Downloaded: %d\n", p.TotalVideos, p.VideosSaved, p.VideosDownloaded)
+		fmt.Printf("   Extracted: %s | Last updated: %s\n", p.ExtractedAt.Format("2006-01-02 15:04:05"), p.LastUpdated.Format("2006-01-02 15:04:05"))
 		fmt.Println()
 	}
 

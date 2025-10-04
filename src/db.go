@@ -36,13 +36,16 @@ type DownloadRecord struct {
 }
 
 type PlaylistRecord struct {
-	ID          string
-	URL         string
-	Title       string
-	Channel     string
-	ChannelURL  string
-	VideoCount  int
-	ExtractedAt time.Time
+	ID               string
+	URL              string
+	Title            string
+	Channel          string
+	ChannelURL       string
+	TotalVideos      int
+	VideosSaved      int
+	VideosDownloaded int
+	ExtractedAt      time.Time
+	LastUpdated      time.Time
 }
 
 type PlaylistVideo struct {
@@ -111,8 +114,11 @@ func (db *DB) createTables() error {
 		title TEXT NOT NULL,
 		channel TEXT,
 		channel_url TEXT,
-		video_count INTEGER NOT NULL,
-		extracted_at DATETIME NOT NULL
+		total_videos INTEGER NOT NULL,
+		videos_saved INTEGER NOT NULL DEFAULT 0,
+		videos_downloaded INTEGER NOT NULL DEFAULT 0,
+		extracted_at DATETIME NOT NULL,
+		last_updated DATETIME NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_playlist_url ON playlists(url);
 
@@ -248,7 +254,7 @@ func (db *DB) GetAllDownloads() ([]DownloadRecord, error) {
 	return downloads, rows.Err()
 }
 
-func (db *DB) InsertPlaylist(url, title, channel, channelURL string, videoCount int) (string, error) {
+func (db *DB) InsertPlaylist(url, title, channel, channelURL string, totalVideos, videosSaved int) (string, error) {
 	id := uuid.New().String()
 
 	if title == "" {
@@ -257,13 +263,35 @@ func (db *DB) InsertPlaylist(url, title, channel, channelURL string, videoCount 
 
 	now := time.Now()
 	_, err := db.conn.Exec(
-		`INSERT INTO playlists (id, url, title, channel, channel_url, video_count, extracted_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, url, title, channel, channelURL, videoCount, now,
+		`INSERT INTO playlists (id, url, title, channel, channel_url, total_videos, videos_saved, videos_downloaded, extracted_at, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, url, title, channel, channelURL, totalVideos, videosSaved, 0, now, now,
 	)
 	if err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+func (db *DB) UpdatePlaylistCounts(id string, totalVideos, videosSaved, videosDownloaded int) error {
+	_, err := db.conn.Exec(
+		`UPDATE playlists SET total_videos = ?, videos_saved = ?, videos_downloaded = ?, last_updated = ? WHERE id = ?`,
+		totalVideos, videosSaved, videosDownloaded, time.Now(), id,
+	)
+	return err
+}
+
+func (db *DB) GetPlaylistByURL(url string) (*PlaylistRecord, error) {
+	row := db.conn.QueryRow(
+		`SELECT id, url, title, channel, channel_url, total_videos, videos_saved, videos_downloaded, extracted_at, last_updated FROM playlists WHERE url = ?`,
+		url,
+	)
+
+	var p PlaylistRecord
+	err := row.Scan(&p.ID, &p.URL, &p.Title, &p.Channel, &p.ChannelURL, &p.TotalVideos, &p.VideosSaved, &p.VideosDownloaded, &p.ExtractedAt, &p.LastUpdated)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 func (db *DB) InsertPlaylistVideo(playlistID, playlistName, videoURL, videoTitle, videoID, channel, channelURL string, index int) error {
@@ -277,7 +305,7 @@ func (db *DB) InsertPlaylistVideo(playlistID, playlistName, videoURL, videoTitle
 
 func (db *DB) GetAllPlaylists() ([]PlaylistRecord, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, url, title, channel, channel_url, video_count, extracted_at FROM playlists ORDER BY extracted_at DESC`,
+		`SELECT id, url, title, channel, channel_url, total_videos, videos_saved, videos_downloaded, extracted_at, last_updated FROM playlists ORDER BY last_updated DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -287,12 +315,24 @@ func (db *DB) GetAllPlaylists() ([]PlaylistRecord, error) {
 	var playlists []PlaylistRecord
 	for rows.Next() {
 		var p PlaylistRecord
-		if err := rows.Scan(&p.ID, &p.URL, &p.Title, &p.Channel, &p.ChannelURL, &p.VideoCount, &p.ExtractedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.URL, &p.Title, &p.Channel, &p.ChannelURL, &p.TotalVideos, &p.VideosSaved, &p.VideosDownloaded, &p.ExtractedAt, &p.LastUpdated); err != nil {
 			return nil, err
 		}
 		playlists = append(playlists, p)
 	}
 	return playlists, rows.Err()
+}
+
+func (db *DB) VideoExistsInPlaylist(playlistID, videoID string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM playlist_videos WHERE playlist_id = ? AND video_id = ?`,
+		playlistID, videoID,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (db *DB) GetPlaylistVideos(playlistID string) ([]PlaylistVideo, error) {
