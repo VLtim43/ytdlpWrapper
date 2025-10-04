@@ -13,7 +13,9 @@ import (
 func main() {
 	// Parse command line arguments manually to allow all ytdlp flags to pass through
 	var url string
+	var playlistURL string
 	var listMode bool
+	var listPlaylists bool
 	var ytdlpArgs []string
 
 	args := os.Args[1:]
@@ -23,10 +25,22 @@ func main() {
 				url = args[i+1]
 				i++
 			}
+		} else if args[i] == "-playlist" || args[i] == "--playlist" {
+			if i+1 < len(args) {
+				playlistURL = args[i+1]
+				i++
+			}
 		} else if args[i] == "-list" || args[i] == "--list" {
 			listMode = true
-		} else if !strings.HasPrefix(args[i], "-") && url == "" {
-			url = args[i]
+		} else if args[i] == "-list-playlists" || args[i] == "--list-playlists" {
+			listPlaylists = true
+		} else if !strings.HasPrefix(args[i], "-") && url == "" && playlistURL == "" {
+			// Auto-detect playlist URLs
+			if src.IsPlaylistURL(args[i]) {
+				playlistURL = args[i]
+			} else {
+				url = args[i]
+			}
 		} else {
 			ytdlpArgs = append(ytdlpArgs, args[i])
 		}
@@ -43,7 +57,7 @@ func main() {
 	}
 
 	// Initialize database
-	dbPath := filepath.Join(".", "db", "downloads.db")
+	dbPath := filepath.Join(".", "db", "data.db")
 	db, err := src.Open(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
@@ -54,6 +68,22 @@ func main() {
 	// Handle different modes
 	if listMode {
 		if err := src.ListDownloads(db); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if listPlaylists {
+		if err := src.ListPlaylists(db); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if playlistURL != "" {
+		if err := src.ExtractPlaylistToDB(playlistURL, db); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

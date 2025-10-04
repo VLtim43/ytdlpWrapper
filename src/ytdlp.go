@@ -15,6 +15,13 @@ func IsInstalled() bool {
 	return err == nil
 }
 
+func IsPlaylistURL(urlStr string) bool {
+	// Check for common playlist indicators
+	return strings.Contains(urlStr, "/playlist") ||
+		strings.Contains(urlStr, "list=") ||
+		strings.Contains(urlStr, "/playlists/")
+}
+
 func NormalizeFilename(filename string) string {
 	// Replace spaces with underscores
 	filename = strings.ReplaceAll(filename, " ", "_")
@@ -113,4 +120,74 @@ func readAndCallback(r io.Reader, callback func(string)) {
 	for scanner.Scan() {
 		callback(scanner.Text())
 	}
+}
+
+type PlaylistInfo struct {
+	Title      string
+	Channel    string
+	ChannelURL string
+	Videos     []VideoInfo
+}
+
+type VideoInfo struct {
+	URL        string
+	Title      string
+	ID         string
+	Channel    string
+	ChannelURL string
+}
+
+func ExtractPlaylist(playlistURL string) (*PlaylistInfo, error) {
+	args := []string{
+		"--flat-playlist",
+		"--get-url",
+		"--print", "%(playlist_title,playlist)s|%(playlist_channel,channel)s|%(playlist_channel_url,channel_url)s|%(playlist_index)s|%(id)s|%(title)s|%(channel)s|%(channel_url)s|%(url)s",
+		playlistURL,
+	}
+
+	cmd := exec.Command("yt-dlp", args...)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(output), "\n")
+	info := &PlaylistInfo{
+		Videos: make([]VideoInfo, 0),
+	}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse format: playlist_title|playlist_channel|playlist_channel_url|index|id|title|channel|channel_url|url
+		parts := strings.SplitN(line, "|", 9)
+		if len(parts) == 9 {
+			// Extract playlist info from first video
+			if info.Title == "" {
+				info.Title = parts[0]
+				info.Channel = parts[1]
+				info.ChannelURL = parts[2]
+			}
+
+			video := VideoInfo{
+				ID:         parts[4],
+				Title:      parts[5],
+				Channel:    parts[6],
+				ChannelURL: parts[7],
+				URL:        parts[8],
+			}
+			info.Videos = append(info.Videos, video)
+		}
+	}
+
+	// Fallback: Extract playlist title from URL if still empty
+	if info.Title == "" && len(info.Videos) > 0 {
+		info.Title = extractTitleFromURL(playlistURL)
+	}
+
+	return info, nil
 }

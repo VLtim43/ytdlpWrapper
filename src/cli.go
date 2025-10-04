@@ -23,6 +23,11 @@ func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
 		return fmt.Errorf("yt-dlp is not installed")
 	}
 
+	// Reject playlist URLs
+	if IsPlaylistURL(url) {
+		return fmt.Errorf("playlist URL detected. Use -playlist flag instead:\n  %s -playlist %s", os.Args[0], url)
+	}
+
 	downloadsDir, err := ensureDownloadsFolder()
 	if err != nil {
 		return fmt.Errorf("failed to create downloads folder: %w", err)
@@ -62,7 +67,7 @@ func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
 	}
 
 	var lastOutput string
-	var videoTitle string
+	var videoTitle, videoChannel string
 
 	err = DownloadWithCallback(opts, func(line string) {
 		// Extract title from destination line
@@ -74,6 +79,12 @@ func RunHeadless(url string, ytdlpArgs []string, db *DB) error {
 				videoTitle = strings.TrimSuffix(filename, ext)
 				db.UpdateDownloadTitle(downloadID, videoTitle)
 			}
+		}
+
+		// Extract channel info
+		if videoChannel == "" && strings.Contains(line, "[info]") && strings.Contains(line, "Extracting URL:") {
+			// This is a simple heuristic - ytdlp doesn't easily expose channel in progress output
+			// Channel will be captured more reliably from playlist extraction
 		}
 
 		// Look for download progress lines
@@ -206,6 +217,9 @@ func ListDownloads(db *DB) error {
 		if d.Title != "" {
 			fmt.Printf("   Title: %s\n", d.Title)
 		}
+		if d.Channel != "" {
+			fmt.Printf("   Channel: %s\n", d.Channel)
+		}
 		if d.FilePath != "" {
 			fmt.Printf("   Path: %s\n", d.FilePath)
 		}
@@ -213,6 +227,80 @@ func ListDownloads(db *DB) error {
 			fmt.Printf("   Error: %s\n", d.Error)
 		}
 		fmt.Printf("   Created: %s\n", d.CreatedAt.Format("2006-01-02 15:04:05"))
+		fmt.Println()
+	}
+
+	return nil
+}
+
+func ExtractPlaylistToDB(playlistURL string, db *DB) error {
+	if !IsInstalled() {
+		return fmt.Errorf("yt-dlp is not installed")
+	}
+
+	info, err := ExtractPlaylist(playlistURL)
+	if err != nil {
+		return fmt.Errorf("failed to extract playlist: %w", err)
+	}
+
+	if len(info.Videos) == 0 {
+		return fmt.Errorf("no videos found in playlist")
+	}
+
+	title := info.Title
+	if title == "" {
+		title = "Unknown Playlist"
+	}
+
+	totalVideos := len(info.Videos)
+	channel := info.Channel
+	channelURL := info.ChannelURL
+
+	playlistID, err := db.InsertPlaylist(playlistURL, title, channel, channelURL, totalVideos)
+	if err != nil {
+		return fmt.Errorf("failed to insert playlist: %w", err)
+	}
+
+	savedCount := 0
+	for i, video := range info.Videos {
+		if err := db.InsertPlaylistVideo(playlistID, title, video.URL, video.Title, video.ID, video.Channel, video.ChannelURL, i+1); err == nil {
+			savedCount++
+		}
+	}
+
+	fmt.Printf("Playlist: %s\n", title)
+	fmt.Printf("Videos in playlist: %d\n", totalVideos)
+	fmt.Printf("Videos saved to database: %d\n", savedCount)
+
+	if savedCount < totalVideos {
+		fmt.Fprintf(os.Stderr, "Warning: Only %d/%d videos were saved\n", savedCount, totalVideos)
+	}
+
+	return nil
+}
+
+func ListPlaylists(db *DB) error {
+	playlists, err := db.GetAllPlaylists()
+	if err != nil {
+		return fmt.Errorf("failed to get playlists: %w", err)
+	}
+
+	if len(playlists) == 0 {
+		fmt.Println("No playlists yet")
+		return nil
+	}
+
+	fmt.Println("Playlists:")
+	fmt.Println(strings.Repeat("─", 80))
+
+	for _, p := range playlists {
+		fmt.Printf("📋 [%s] %s\n", p.ID, p.Title)
+		if p.Channel != "" {
+			fmt.Printf("   Channel: %s\n", p.Channel)
+		}
+		fmt.Printf("   URL: %s\n", p.URL)
+		fmt.Printf("   Videos: %d\n", p.VideoCount)
+		fmt.Printf("   Extracted: %s\n", p.ExtractedAt.Format("2006-01-02 15:04:05"))
 		fmt.Println()
 	}
 
