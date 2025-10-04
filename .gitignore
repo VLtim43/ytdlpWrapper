@@ -1,0 +1,43 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ytdlpWrapper
+ytdlp-wrapper
+
+# Test binaries
+*.test
+
+# Coverage
+*.out
+*.prof
+
+# Go workspace file
+go.work
+
+# Application directories
+db/
+downloads/
+
+# SQLite files
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+/.claude
