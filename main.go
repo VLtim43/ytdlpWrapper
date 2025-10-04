@@ -1,11 +1,11 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -88,7 +88,7 @@ func ensureDownloadsFolder() (string, error) {
 	return downloadsDir, nil
 }
 
-func headlessMode(url string, cookiesFile string, extraArgs []string, database *src.DB) error {
+func headlessMode(url string, ytdlpArgs []string, db *src.DB) error {
 	if !src.IsInstalled() {
 		return fmt.Errorf("yt-dlp is not installed")
 	}
@@ -102,7 +102,7 @@ func headlessMode(url string, cookiesFile string, extraArgs []string, database *
 	fmt.Printf("URL: %s\n\n", url)
 
 	// Insert download record
-	downloadID, err := database.InsertDownload(url, "")
+	downloadID, err := db.InsertDownload(url, "")
 	if err != nil {
 		return fmt.Errorf("failed to insert download record: %w", err)
 	}
@@ -112,23 +112,22 @@ func headlessMode(url string, cookiesFile string, extraArgs []string, database *
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	opts := src.DownloadOptions{
-		URL:         url,
-		CookiesFile: cookiesFile,
-		OutputPath:  filepath.Join(downloadsDir, "%(title)s.%(ext)s"),
-		ExtraArgs:   extraArgs,
+		URL:        url,
+		OutputPath: filepath.Join(downloadsDir, "%(title)s.%(ext)s"),
+		ExtraArgs:  ytdlpArgs,
 	}
 
 	if err := src.Download(opts); err != nil {
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		// Update status to failed
-		if dbErr := database.UpdateDownloadStatus(downloadID, src.StatusFailed, "", err.Error()); dbErr != nil {
+		if dbErr := db.UpdateDownloadStatus(downloadID, src.StatusFailed, "", err.Error()); dbErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to update download status: %v\n", dbErr)
 		}
 		return fmt.Errorf("download failed: %w", err)
 	}
 
 	// Update status to completed
-	if err := database.UpdateDownloadStatus(downloadID, src.StatusCompleted, filepath.Join(downloadsDir, "%(title)s.%(ext)s"), ""); err != nil {
+	if err := db.UpdateDownloadStatus(downloadID, src.StatusCompleted, filepath.Join(downloadsDir, "%(title)s.%(ext)s"), ""); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to update download status: %v\n", err)
 	}
 
@@ -138,26 +137,49 @@ func headlessMode(url string, cookiesFile string, extraArgs []string, database *
 }
 
 func main() {
-	// Define flags
-	url := flag.String("url", "", "Video URL to download")
-	cookiesFile := flag.String("cookies", "", "Path to cookies file")
-	flag.Parse()
+	// Parse command line arguments manually to allow all ytdlp flags to pass through
+	// Look for URL (first non-flag argument or after -url)
+	var url string
+	var ytdlpArgs []string
 
-	// Get any additional arguments to pass to yt-dlp
-	extraArgs := flag.Args()
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-url" || args[i] == "--url" {
+			if i+1 < len(args) {
+				url = args[i+1]
+				i++
+			}
+		} else if !strings.HasPrefix(args[i], "-") && url == "" {
+			// First non-flag argument is the URL
+			url = args[i]
+		} else {
+			// Everything else gets passed to ytdlp
+			ytdlpArgs = append(ytdlpArgs, args[i])
+		}
+	}
+
+	// Ensure required directories exist
+	if err := os.MkdirAll("db", 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating db directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll("downloads", 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating downloads directory: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Initialize database
 	dbPath := filepath.Join(".", "db", "downloads.db")
-	database, err := src.Open(dbPath)
+	db, err := src.Open(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer database.Close()
+	defer db.Close()
 
 	// If URL is provided, run in headless mode
-	if *url != "" {
-		if err := headlessMode(*url, *cookiesFile, extraArgs, database); err != nil {
+	if url != "" {
+		if err := headlessMode(url, ytdlpArgs, db); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

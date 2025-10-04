@@ -9,13 +9,11 @@ import (
 	"strings"
 )
 
-// IsInstalled checks if yt-dlp is available in PATH
 func IsInstalled() bool {
 	_, err := exec.LookPath("yt-dlp")
 	return err == nil
 }
 
-// NormalizeFilename removes invalid characters and normalizes filename
 func NormalizeFilename(filename string) string {
 	// Replace spaces with underscores
 	filename = strings.ReplaceAll(filename, " ", "_")
@@ -36,34 +34,21 @@ func NormalizeFilename(filename string) string {
 
 // DownloadOptions contains options for downloading videos
 type DownloadOptions struct {
-	URL         string
-	CookiesFile string
-	OutputPath  string
-	AudioOnly   bool
-	ExtraArgs   []string
+	URL        string
+	OutputPath string
+	ExtraArgs  []string
 }
 
-// Download executes yt-dlp with the given options
 func Download(opts DownloadOptions) error {
 	args := []string{}
 
-	// Restrict filenames to ASCII characters and normalize
 	args = append(args, "--restrict-filenames")
-
-	if opts.CookiesFile != "" {
-		args = append(args, "--cookies", opts.CookiesFile)
-	}
 
 	if opts.OutputPath != "" {
 		args = append(args, "-o", opts.OutputPath)
 	}
 
-	if opts.AudioOnly {
-		args = append(args, "-x", "--audio-format", "mp3")
-	}
-
 	args = append(args, opts.ExtraArgs...)
-
 	args = append(args, opts.URL)
 
 	cmd := exec.Command("yt-dlp", args...)
@@ -82,16 +67,8 @@ func DownloadWithCallback(opts DownloadOptions, callback func(string)) error {
 	// Restrict filenames to ASCII characters and normalize
 	args = append(args, "--restrict-filenames")
 
-	if opts.CookiesFile != "" {
-		args = append(args, "--cookies", opts.CookiesFile)
-	}
-
 	if opts.OutputPath != "" {
 		args = append(args, "-o", opts.OutputPath)
-	}
-
-	if opts.AudioOnly {
-		args = append(args, "-x", "--audio-format", "mp3")
 	}
 
 	args = append(args, opts.ExtraArgs...)
