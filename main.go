@@ -3,75 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"ytdlpWrapper/src"
 )
-
-var (
-	borderStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#fc40fcff")).
-		Padding(1, 2)
-)
-
-type model struct {
-	ytdlpInstalled bool
-	ytdlpChecked   bool
-}
-
-type ytdlpCheckMsg struct {
-	installed bool
-}
-
-func checkYtdlp() tea.Msg {
-	_, err := exec.LookPath("yt-dlp")
-	return ytdlpCheckMsg{installed: err == nil}
-}
-
-func initialModel() model {
-	return model{
-		ytdlpChecked: false,
-	}
-}
-
-func (m model) Init() tea.Cmd {
-	return checkYtdlp
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c":
-			return m, tea.Quit
-		}
-
-	case ytdlpCheckMsg:
-		m.ytdlpInstalled = msg.installed
-		m.ytdlpChecked = true
-	}
-	return m, nil
-}
-
-func (m model) View() string {
-	var status string
-
-	if !m.ytdlpChecked {
-		status = "Checking yt-dlp installation..."
-	} else if m.ytdlpInstalled {
-		status = "✓ yt-dlp is installed"
-	} else {
-		status = "✗ yt-dlp is not installed"
-	}
-
-	content := fmt.Sprintf("🎬 yt-dlp Wrapper\n\n%s\n\nPress Ctrl+C to quit", status)
-	return "\n" + borderStyle.Render(content) + "\n"
-}
 
 func ensureDownloadsFolder() (string, error) {
 	// Use current working directory as base
@@ -187,7 +123,7 @@ func main() {
 	}
 
 	// Otherwise, run TUI mode
-	p := tea.NewProgram(initialModel())
+	p := src.NewProgram(db)
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v", err)
 		os.Exit(1)
