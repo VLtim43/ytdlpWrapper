@@ -2,6 +2,7 @@ package src
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -37,6 +38,7 @@ type DownloadOptions struct {
 	URL        string
 	OutputPath string
 	ExtraArgs  []string
+	Context    context.Context
 }
 
 func Download(opts DownloadOptions) error {
@@ -51,9 +53,13 @@ func Download(opts DownloadOptions) error {
 	args = append(args, opts.ExtraArgs...)
 	args = append(args, opts.URL)
 
-	cmd := exec.Command("yt-dlp", args...)
+	var cmd *exec.Cmd
+	if opts.Context != nil {
+		cmd = exec.CommandContext(opts.Context, "yt-dlp", args...)
+	} else {
+		cmd = exec.Command("yt-dlp", args...)
+	}
 
-	// Inherit stdout and stderr to show yt-dlp output
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -64,7 +70,6 @@ func Download(opts DownloadOptions) error {
 func DownloadWithCallback(opts DownloadOptions, callback func(string)) error {
 	args := []string{}
 
-	// Restrict filenames to ASCII characters and normalize
 	args = append(args, "--restrict-filenames")
 
 	if opts.OutputPath != "" {
@@ -74,7 +79,12 @@ func DownloadWithCallback(opts DownloadOptions, callback func(string)) error {
 	args = append(args, opts.ExtraArgs...)
 	args = append(args, opts.URL)
 
-	cmd := exec.Command("yt-dlp", args...)
+	var cmd *exec.Cmd
+	if opts.Context != nil {
+		cmd = exec.CommandContext(opts.Context, "yt-dlp", args...)
+	} else {
+		cmd = exec.Command("yt-dlp", args...)
+	}
 
 	// Create pipes for stdout and stderr
 	stdout, err := cmd.StdoutPipe()

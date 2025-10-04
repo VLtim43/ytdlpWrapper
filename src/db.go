@@ -2,8 +2,12 @@ package src
 
 import (
 	"database/sql"
+	"net/url"
+	"path"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -13,10 +17,11 @@ const (
 	StatusCompleted DownloadStatus = "completed"
 	StatusFailed    DownloadStatus = "failed"
 	StatusPending   DownloadStatus = "pending"
+	StatusCancelled DownloadStatus = "cancelled"
 )
 
 type DownloadRecord struct {
-	ID        int64
+	ID        string
 	URL       string
 	Title     string
 	FilePath  string
@@ -51,9 +56,9 @@ func Open(dbPath string) (*DB, error) {
 func (db *DB) createTables() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS downloads (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id TEXT PRIMARY KEY,
 		url TEXT NOT NULL,
-		title TEXT,
+		title TEXT NOT NULL,
 		file_path TEXT,
 		status TEXT NOT NULL,
 		error TEXT,
@@ -72,19 +77,58 @@ func (db *DB) Close() error {
 	return db.conn.Close()
 }
 
-func (db *DB) InsertDownload(url, title string) (int64, error) {
+func (db *DB) InsertDownload(urlStr, title string) (string, error) {
+	id := uuid.New().String()
+
+	if title == "" {
+		title = extractTitleFromURL(urlStr)
+	}
+
 	now := time.Now()
-	result, err := db.conn.Exec(
-		`INSERT INTO downloads (url, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		url, title, StatusPending, now, now,
+	_, err := db.conn.Exec(
+		`INSERT INTO downloads (id, url, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, urlStr, title, StatusPending, now, now,
 	)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	return result.LastInsertId()
+	return id, nil
 }
 
-func (db *DB) UpdateDownloadStatus(id int64, status DownloadStatus, filePath, errorMsg string) error {
+func extractTitleFromURL(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return urlStr
+	}
+
+	// Get the last part of the path
+	basePath := path.Base(parsed.Path)
+	if basePath != "" && basePath != "/" && basePath != "." {
+		// Remove extension if present
+		ext := path.Ext(basePath)
+		if ext != "" {
+			basePath = strings.TrimSuffix(basePath, ext)
+		}
+		return basePath
+	}
+
+	// Fallback to query parameters or hostname
+	if parsed.RawQuery != "" {
+		// Try to extract video ID from common patterns
+		params := parsed.Query()
+		if v := params.Get("v"); v != "" {
+			return v
+		}
+		if id := params.Get("id"); id != "" {
+			return id
+		}
+	}
+
+	// Last resort: use hostname + path
+	return strings.TrimPrefix(parsed.Host+parsed.Path, "www.")
+}
+
+func (db *DB) UpdateDownloadStatus(id string, status DownloadStatus, filePath, errorMsg string) error {
 	_, err := db.conn.Exec(
 		`UPDATE downloads SET status = ?, file_path = ?, error = ?, updated_at = ? WHERE id = ?`,
 		status, filePath, errorMsg, time.Now(), id,
@@ -92,7 +136,15 @@ func (db *DB) UpdateDownloadStatus(id int64, status DownloadStatus, filePath, er
 	return err
 }
 
-func (db *DB) GetDownload(id int64) (*DownloadRecord, error) {
+func (db *DB) UpdateDownloadTitle(id, title string) error {
+	_, err := db.conn.Exec(
+		`UPDATE downloads SET title = ?, updated_at = ? WHERE id = ?`,
+		title, time.Now(), id,
+	)
+	return err
+}
+
+func (db *DB) GetDownload(id string) (*DownloadRecord, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, url, title, file_path, status, error, created_at, updated_at FROM downloads WHERE id = ?`,
 		id,
